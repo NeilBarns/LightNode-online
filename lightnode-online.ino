@@ -8,6 +8,7 @@
 #include <Ticker.h>
 #include <ArduinoOTA.h>
 #include <FirebaseESP8266.h>
+#include <WiFiManager.h>
 
 #define RELAY_PIN D1
 #define AP_BUTTON_PIN D2
@@ -18,6 +19,7 @@
 
 WiFiServer telnetServer(23);
 WiFiClient telnetClient;
+WiFiManager wifiManager;
 
 // Firebase credentials
 #define FIREBASE_HOST "lightmaster-beta-default-rtdb.asia-southeast1.firebasedatabase.app"
@@ -28,15 +30,27 @@ FirebaseAuth auth;
 FirebaseConfig config;
 
 // Configuration parameters
-char ssid[32] = "";
-char password[32] = ""; 
-char serverAppDomain[32] = ""; 
-char clientName[32] = ""; 
-char serverAppPort[6] = "";
+String manufacturerDeviceName = "Lightnode";
+String versionNumber = "1.1.1";
+String APSSID = manufacturerDeviceName + "-" + versionNumber + "-AP";
+String APPass = "L1ghtN0d3@2024";
+const char* mDNSHostname = "110lightnode"; 
+const char* otaPassword = "L1ghtN0d3@2024";
+char serverAppDomain[32] = "192.168.100.122"; 
+char serverAppPort[6] = "8000";
+char protocol[6] = "http";
+//char serverAppDomain[32] = "uat.lightmaster.fun"; 
+//char serverAppPort[6] = "0";
+char clientName[32] = "uat"; 
+//char clientName[32] = "Develop"; 
 const char* registerDeviceURL = "/api/device/insert";
 const char* updateDeviceURL = "/api/device/update";
 const char* stopDeviceTimeURL = "/api/device-time/end";
 const char* pauseDeviceTimeURL = "/api/device-time/pause";
+const char* heartbeatURL = "/api/device/heartbeat";
+byte ipAddress[4];
+char ssid[32] = "";
+char password[32] = ""; 
 char deviceName[32] = "";
 int deviceId = 0;
 
@@ -49,13 +63,6 @@ IPAddress subnet;
 char ipString[16] = "";
 char gatewayString[16] = "";
 char subnetString[16] = "";
-
-String manufacturerDeviceName = "Lightnode";
-String versionNumber = "1.0.9-0";
-String APSSID = manufacturerDeviceName + "-" + versionNumber + "-AP";
-String APPass = "L1ghtN0d3@2024";
-const char* mDNSHostname = "110lightnode"; 
-const char* otaPassword = "L1ghtN0d3@2024";
 char hostURL[128];
 String firebasePath = "";
 
@@ -76,6 +83,8 @@ int storedTimeInSeconds = 0;
 bool writeToFirebase = false;
 bool requireRestart = false;
 bool endingTime = false;
+int defaultHeartbeatInterval = 120;
+int heartbeatInterval = defaultHeartbeatInterval;
 
 bool isButtonCurrentlyPressed = false; // State of the button press
 bool previousButtonState = HIGH; // Last known state of the button
@@ -199,7 +208,7 @@ void streamCallback(StreamData data) {
     }
 
     if (command == "delete") {
-        deleteCommand();
+        deleteAndResetCommand();
         writeToFirebase = true;
     } 
     else if (command == "test") {
@@ -251,12 +260,24 @@ void streamCallback(StreamData data) {
         stopFreeCommand();
         writeToFirebase = true;
     }
+    else if (command == "sync") {
+        syncCommand(span);
+        writeToFirebase = false;
+    }
+    else if (command == "reset") {
+        deleteAndResetCommand();
+        writeToFirebase = true;
+    }
     else {
         writeToFirebase = false;
     }
   }
 }
 
+void syncCommand(int span)
+{
+  storedTimeInSeconds = span;
+}
 
 void stopFreeCommand()
 {
@@ -587,7 +608,7 @@ void testCommand()
   }
 }
 
-void deleteCommand()
+void deleteAndResetCommand()
 {
   bool errorOccurred = false;
   String errorMessage;
@@ -601,6 +622,8 @@ void deleteCommand()
       logMessage("Error: " + errorMessage);
       errorOccurred = true;
   }
+
+  wifiManager.resetSettings();
   
   if (errorOccurred) {
       server.send(500, "text/html", "<html><body><h1>" + errorMessage + "</h1></body></html>");
@@ -619,9 +642,9 @@ void streamTimeoutCallback(bool timeout) {
 }
 
 void setup() {
-  pinMode(RELAY_PIN, INPUT_PULLDOWN_16);
-  pinMode(RELAY_PIN, OUTPUT);
+//  pinMode(RELAY_PIN, INPUT_PULLDOWN_16);
   digitalWrite(RELAY_PIN, LOW);
+  pinMode(RELAY_PIN, OUTPUT);
 
   delay(1000);
   
@@ -650,7 +673,7 @@ void setup() {
   loadConfig();
   connectToWiFi();
 
-// Firebase config
+  //Firebase config
   config.host = FIREBASE_HOST;
   config.signer.tokens.legacy_token = FIREBASE_AUTH;
 
@@ -676,8 +699,8 @@ void setup() {
   startMDNS();
   setupServer();
 
-  EEPROM.get(300, isLEDOn);
-  digitalWrite(RELAY_PIN, isLEDOn ? LOW : HIGH);
+//  EEPROM.get(300, isLEDOn);
+//  digitalWrite(RELAY_PIN, isLEDOn ? LOW : HIGH);
 
   Serial.print("Light state on startup: ");
   Serial.println(isLEDOn ? "ON" : "OFF");
@@ -770,6 +793,7 @@ void loop() {
   server.handleClient();
 
   manageLEDTiming();  
+//  manageHeartBeat();
   
   ArduinoOTA.handle(); // Handle OTA updates
 
@@ -901,38 +925,72 @@ void connectToWiFi() {
     gateway.fromString(gatewayString);
     subnet.fromString(subnetString);
 
-    if (strlen(ssid) == 0 || strlen(password) == 0) {
-        Serial.println("No SSID and Password found. Starting AP mode.");
-        startAPMode();
-        return;  // Exit function to prevent further connection attempts
-    }
+//    if (strlen(ssid) == 0 || strlen(password) == 0) {
+//        Serial.println("No SSID and Password found. Starting AP mode.");
+//        startAPMode();
+//        return;  // Exit function to prevent further connection attempts
+//    }
 
-    if (!local_IP.isSet() || !gateway.isSet() || !subnet.isSet()) {
-        Serial.println("Invalid IP configuration. Using DHCP.");
-        WiFi.begin(ssid, password);
-    } else {
-//        WiFi.config(local_IP, gateway, subnet);
-        WiFi.begin(ssid, password);
-    }
+//    if (!local_IP.isSet() || !gateway.isSet() || !subnet.isSet()) {
+//        Serial.println("Invalid IP configuration. Using DHCP.");
+//        WiFi.begin(ssid, password);
+//    } else {
+////        WiFi.config(local_IP, gateway, subnet);
+//        WiFi.begin(ssid, password);
+//    }
 
-    Serial.print(F("Connecting to WiFi "));
-    int attempt = 0;
-    while (WiFi.status() != WL_CONNECTED && attempt < 20) {
-        delay(1000);
-        digitalWrite(LED_BUILTIN, LOW);
-        digitalWrite(PROCESSING_LED_PIN, HIGH);
-        digitalWrite(AP_LED_PIN, LOW);
-        Serial.print(F("."));
-        delay(100);
-        digitalWrite(LED_BUILTIN, HIGH);
-        digitalWrite(PROCESSING_LED_PIN, LOW);
-        digitalWrite(AP_LED_PIN, LOW);
-        delay(100);
-        attempt++;
-    }
-    Serial.println();
+//    Serial.print(F("Connecting to WiFi "));
+//    int attempt = 0;
+//    while (WiFi.status() != WL_CONNECTED && attempt < 20) {
+//        delay(1000);
+//        digitalWrite(LED_BUILTIN, LOW);
+//        digitalWrite(PROCESSING_LED_PIN, HIGH);
+//        digitalWrite(AP_LED_PIN, LOW);
+//        Serial.print(F("."));
+//        delay(100);
+//        digitalWrite(LED_BUILTIN, HIGH);
+//        digitalWrite(PROCESSING_LED_PIN, LOW);
+//        digitalWrite(AP_LED_PIN, LOW);
+//        delay(100);
+//        attempt++;
+//    }
+//    Serial.println();
 
-    if (WiFi.status() == WL_CONNECTED) {
+//    if (WiFi.status() == WL_CONNECTED) {
+//        Serial.println(F("Connected to WiFi"));
+//        Serial.print(F("IP Address: "));
+//        Serial.println(WiFi.localIP());
+//        digitalWrite(LED_BUILTIN, LOW);
+//        digitalWrite(PROCESSING_LED_PIN, HIGH);
+//        digitalWrite(AP_LED_PIN, LOW);
+//
+//        if (WiFi.status() == WL_CONNECTED) {
+//            Serial.println("WiFi Connected: " + WiFi.localIP().toString());
+//        } else {
+//            Serial.println("WiFi not connected.");
+//        }
+//
+//        if (SPIFFS.exists("/logs.txt")) {
+//            if (SPIFFS.remove("/logs.txt")) {
+//                Serial.println("Log file cleared successfully.");
+//            }
+//        }
+//    } else {
+//        Serial.println(F("Failed to connect to WiFi. Starting AP mode."));
+//        startAPMode();
+//    }
+
+    wifiManager.setConfigPortalTimeout(180); // 3 minutes
+
+    // Automatically try to connect to saved Wi-Fi or start AP if needed
+    Serial.println("Attempting to connect to Wi-Fi...");
+    if (!wifiManager.autoConnect(APSSID.c_str())) {
+        Serial.println("Failed to connect. Timeout reached.");
+        delay(3000);
+        // Reset the ESP to try connecting again or open the config portal
+        ESP.restart();
+    }
+    else {
         Serial.println(F("Connected to WiFi"));
         Serial.print(F("IP Address: "));
         Serial.println(WiFi.localIP());
@@ -951,10 +1009,9 @@ void connectToWiFi() {
                 Serial.println("Log file cleared successfully.");
             }
         }
-    } else {
-        Serial.println(F("Failed to connect to WiFi. Starting AP mode."));
-        startAPMode();
     }
+
+    Serial.println("Connected to Wi-Fi successfully!");
 }
 
 
@@ -990,19 +1047,15 @@ void loadConfig() {
     // Ensure buffers are clear before reading
     memset(ssid, 0, sizeof(ssid));
     memset(password, 0, sizeof(password));
-    memset(serverAppDomain, 0, sizeof(serverAppDomain));
-    memset(serverAppPort, 0, sizeof(serverAppPort));
     memset(deviceName, 0, sizeof(deviceName));
     memset(ipString, 0, sizeof(ipString));
     memset(gatewayString, 0, sizeof(gatewayString));
     memset(subnetString, 0, sizeof(subnetString));
-    memset(clientName, 0, sizeof(clientName));
-
+    memset(ipAddress, 0, sizeof(ipAddress));
+    
     // Read data from EEPROM
     EEPROM.get(0, ssid);
     EEPROM.get(32, password);
-    EEPROM.get(64, serverAppDomain);
-    EEPROM.get(96, serverAppPort);
     EEPROM.get(128, deviceName);
     EEPROM.get(160, isRegistered);
     EEPROM.get(161, ipString);
@@ -1014,24 +1067,26 @@ void loadConfig() {
     EEPROM.get(212, isOpenTime);
     EEPROM.get(224, deviceId);
     EEPROM.get(312, watchdogIntervalMinutes);
-    EEPROM.get(320, clientName);
-    EEPROM.get(224, deviceId);
+    EEPROM.get(320, ipAddress);
+    EEPROM.get(350, heartbeatInterval);
 
     // Null-terminate strings to ensure safe string operations
     ssid[sizeof(ssid) - 1] = '\0';
     password[sizeof(password) - 1] = '\0';
-    serverAppDomain[sizeof(serverAppDomain) - 1] = '\0';
-    serverAppPort[sizeof(serverAppPort) - 1] = '\0';
     deviceName[sizeof(deviceName) - 1] = '\0';
     ipString[sizeof(ipString) - 1] = '\0';
     gatewayString[sizeof(gatewayString) - 1] = '\0';
     subnetString[sizeof(subnetString) - 1] = '\0';
-    clientName[sizeof(clientName) - 1] = '\0';
+    ipAddress[sizeof(ipAddress) - 1] = '\0';
 
-    Serial.print("isRegistered");
-    Serial.println(String(isRegistered));
-
-    snprintf(hostURL, sizeof(hostURL), "http://%s:%s", serverAppDomain, serverAppPort);
+    if (atoi(serverAppPort) > 0) 
+    {
+        snprintf(hostURL, sizeof(hostURL), "%s://%s:%s", protocol, serverAppDomain, serverAppPort);
+    }
+    else
+    {
+        snprintf(hostURL, sizeof(hostURL), "%s://%s", protocol, serverAppDomain);
+    }
 }
 
 
@@ -1051,7 +1106,8 @@ void saveConfig() {
     EEPROM.put(212, isOpenTime);
     EEPROM.put(224, deviceId);
     EEPROM.put(312, watchdogIntervalMinutes);
-    EEPROM.put(320, clientName);
+    EEPROM.put(320, ipAddress);
+    EEPROM.put(350, heartbeatInterval);
     
     
     if (EEPROM.commit()) {
@@ -1063,447 +1119,9 @@ void saveConfig() {
 
 
 void setupServer() {
-  server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", generateHTML());
-  });
-
-  server.on("/save", HTTP_POST, []() {
-    bool errorOccurred = false;
-    String errorMessage;
-
-    if (server.hasArg("ssid") && server.hasArg("password") && server.hasArg("hostname") && server.hasArg("device_name")) {
-        
-        // Validate and copy each argument
-        if (server.arg("ssid").length() >= sizeof(ssid) || server.arg("ssid").length() == 0) {
-            errorMessage = "Invalid SSID length";
-            errorOccurred = true;
-        } else {
-            strncpy(ssid, server.arg("ssid").c_str(), sizeof(ssid));
-        }
-
-        if (server.arg("password").length() >= sizeof(password) || server.arg("password").length() == 0) {
-            errorMessage = "Invalid Password length";
-            errorOccurred = true;
-        } else {
-            strncpy(password, server.arg("password").c_str(), sizeof(password));
-        }
-
-        if (server.arg("hostname").length() >= sizeof(serverAppDomain) || server.arg("hostname").length() == 0) {
-            errorMessage = "Invalid Server Hostname length";
-            errorOccurred = true;
-        } else {
-            strncpy(serverAppDomain, server.arg("hostname").c_str(), sizeof(serverAppDomain));
-        }
-
-        if (server.arg("clientname").length() >= sizeof(clientName) || server.arg("clientname").length() == 0) {
-            errorMessage = "Invalid Server Client Name length";
-            errorOccurred = true;
-        } else {
-            strncpy(clientName, server.arg("clientname").c_str(), sizeof(clientName));
-        }
-
-        if (server.arg("port").length() >= sizeof(serverAppPort) || server.arg("port").length() == 0) {
-            errorMessage = "Invalid Server Port length";
-            errorOccurred = true;
-        } else {
-            strncpy(serverAppPort, server.arg("port").c_str(), sizeof(serverAppPort));
-        }
-
-        if (server.arg("device_name").length() >= sizeof(deviceName) || server.arg("device_name").length() == 0) {
-            errorMessage = "Invalid Device Name length";
-            errorOccurred = true;
-        } else {
-            strncpy(deviceName, server.arg("device_name").c_str(), sizeof(deviceName));
-        }
-
-        if (errorOccurred) {
-            logMessage("Error: " + errorMessage);
-            server.send(400, "text/html", "<html><body><h1>" + errorMessage + "</h1></body></html>");
-        } else {
-            // No errors, proceed to save configuration
-            isRegistered = false; // Reset registration status on config save
-            saveConfig();
-            server.send(200, "text/html", "<html><body><h1>Configuration Saved!</h1><p>Device will reboot now.</p></body></html>");
-            delay(2000);
-            ESP.restart();
-        }
-
-    } else {
-        errorMessage = "Missing required parameters";
-        logMessage("Error: " + errorMessage);
-        server.send(400, "text/html", "<html><body><h1>" + errorMessage + "</h1></body></html>");
-    }
-});
-
-
-  server.on("/api/reset", HTTP_DELETE, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      // Attempt to reset the device
-      digitalWrite(RELAY_PIN, LOW); // Turn off LED or other indicator
-  
-      // Attempt to reset EEPROM and SPIFFS
-      if (!resetEEPROMSPIFFS()) {
-          errorMessage = "Failed to reset EEPROM and SPIFFS.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-  
-      if (errorOccurred) {
-          server.send(500, "text/html", "<html><body><h1>" + errorMessage + "</h1></body></html>");
-      } else {
-          server.send(200, "text/html", "<html><body><h1>Device Reset</h1><p>Device has been reset successfully.</p></body></html>");
-          delay(2000);
-          ESP.restart();
-      }
-  });
-
-
-server.on("/api/span", HTTP_GET, []() {
-    bool errorOccurred = false;
-    String errorMessage;
-    int temp_storedTimeInSeconds = 0;
-
-    if (server.hasArg("time")) {
-        String timeArg = server.arg("time");
-        int timeInSeconds = timeArg.toInt();
-
-        // Check if conversion was successful
-        if (timeInSeconds == 0 && timeArg != "0") {
-            errorMessage = "Invalid time value: " + timeArg;
-            logMessage("Error: " + errorMessage);
-            errorOccurred = true;
-        } else if (timeInSeconds < 0) {
-            errorMessage = "Negative time value not allowed: " + timeArg;
-            logMessage("Error: " + errorMessage);
-            errorOccurred = true;
-        } else {
-            temp_storedTimeInSeconds = readTimeFromSPIFFS();
-            if (temp_storedTimeInSeconds < 0) {
-                errorMessage = "Failed to read time from SPIFFS.";
-                logMessage("Error: " + errorMessage);
-                errorOccurred = true;
-            } else {
-                Serial.println("timeInSeconds:" + String(timeInSeconds));
-                Serial.println("storedTimeInSeconds:" + String(temp_storedTimeInSeconds));
-                temp_storedTimeInSeconds += timeInSeconds;
-                Serial.println("extended-storedTimeInSeconds:" + String(temp_storedTimeInSeconds));
-                
-                if (!writeTimeToSPIFFS(temp_storedTimeInSeconds)) {
-                    errorMessage = "Failed to write time to SPIFFS.";
-                    logMessage("Error: " + errorMessage);
-                    errorOccurred = true;
-                } else {
-                    storedTimeInSeconds = temp_storedTimeInSeconds;
-                }
-            }
-        }
-
-        if (errorOccurred) {
-            server.send(400, "text/plain", errorMessage);
-        } else {
-            server.send(200, "text/plain", "Time set to " + String(temp_storedTimeInSeconds) + " seconds");
-        }
-    } else {
-        errorMessage = "Missing time parameter";
-        logMessage("Error: " + errorMessage);
-        server.send(400, "text/plain", errorMessage);
-    }
-});
-
-
-server.on("/api/stop", HTTP_GET, []() {
-    bool errorOccurred = false;
-    String errorMessage;
-
-    Serial.println("Forced stop");
-
-    // Attempt to turn off LED and update EEPROM
-    digitalWrite(RELAY_PIN, LOW);
-    isLEDOn = false;
-    EEPROM.put(300, isLEDOn);
-    if (!EEPROM.commit()) {
-        errorMessage = "Failed to commit LED state to EEPROM.";
-        logMessage("Error: " + errorMessage);
-        errorOccurred = true;
-    }
-
-    // Attempt to update EEPROM
-    isPaused = false;
-    EEPROM.put(210, isPaused);
-    isOpenTime = false;
-    EEPROM.put(212, isOpenTime);
-    
-    if (!EEPROM.commit()) {
-        errorMessage = "Failed to commit paused state to EEPROM.";
-        logMessage("Error: " + errorMessage);
-        errorOccurred = true;
-    }
-
-    // Respond to the client with storedTimeInSeconds
-    if (errorOccurred) {
-        server.send(500, "application/json", "{\"success\": false, \"error\": \"" + errorMessage + "\"}");
-    } else {
-        String jsonResponse = "{\"success\": true, \"storedTimeInSeconds\": " + String(storedTimeInSeconds) + "}";
-        // Attempt to write 0 to SPIFFS
-        if (!writeTimeToSPIFFS(0)) {
-            errorMessage = "Failed to write time to SPIFFS.";
-            logMessage("Error: " + errorMessage);
-            errorOccurred = true;
-        } else {
-            storedTimeInSeconds = 0;
-        }
-        server.send(200, "application/json", jsonResponse);
-        server.client().flush(); 
-        delay(1000); 
-        ESP.restart();
-    }
-});
-
-
-
-  server.on("/api/test", HTTP_GET, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      Serial.println("Testing");
-  
-      // Set the testing state
-      isTesting = true;
-  
-      // Set a longer time for testing
-      storedTimeInSeconds = 10; // Ensure correct value, as the message indicates
-  
-      // Check if the state has been set correctly
-      if (storedTimeInSeconds != 10) {
-          errorMessage = "Failed to set the test time correctly.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-  
-      // Respond to the client
-      if (errorOccurred) {
-          server.send(500, "text/plain", "Failed to initiate device test.");
-      } else {
-          server.send(200, "text/plain", "Device test initiated. Time set to 10000 seconds");
-      }
-  });
-
-
-  server.on("/api/disable", HTTP_GET, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      // Attempt to disable the device
-      isDisabled = true;
-      EEPROM.put(209, isDisabled);
-  
-      // Check if EEPROM commit is successful
-      if (!EEPROM.commit()) {
-          errorMessage = "Failed to commit disabled state to EEPROM.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-  
-      // Respond to the client
-      if (errorOccurred) {
-          server.send(500, "text/plain", "Failed to disable the device.");
-      } else {
-          server.send(200, "text/plain", "Device disabled");
-      }
-  });
-
-
-  server.on("/api/enable", HTTP_GET, []() {
-    bool errorOccurred = false;
-    String errorMessage;
-
-    // Attempt to enable the device
-    isDisabled = false;
-    EEPROM.put(209, isDisabled);
-
-    // Check if EEPROM commit is successful
-    if (!EEPROM.commit()) {
-        errorMessage = "Failed to commit enabled state to EEPROM.";
-        logMessage("Error: " + errorMessage);
-        errorOccurred = true;
-    }
-
-    // Respond to the client
-    if (errorOccurred) {
-        server.send(500, "text/plain", "Failed to enable the device.");
-    } else {
-        server.send(200, "text/plain", "Device enabled");
-    }
-});
-
-server.on("/api/pause", HTTP_GET, []() {
-    bool errorOccurred = false;
-    String errorMessage;
-
-    // Attempt to pause the device
-    isPaused = true;
-    EEPROM.put(210, isPaused);
-
-    // Check if EEPROM commit for isPaused is successful
-    if (!EEPROM.commit()) {
-        errorMessage = "Failed to commit pause state to EEPROM.";
-        logMessage("Error: " + errorMessage);
-        errorOccurred = true;
-    }
-
-    // Attempt to turn off the LED
-    digitalWrite(RELAY_PIN, LOW);
-    isLEDOn = false;
-    EEPROM.put(300, isLEDOn);
-
-    // Check if EEPROM commit for isLEDOn is successful
-    if (!EEPROM.commit()) {
-        errorMessage = "Failed to commit LED state to EEPROM.";
-        logMessage("Error: " + errorMessage);
-        errorOccurred = true;
-    }
-
-    // Respond to the client
-    if (errorOccurred) {
-        server.send(500, "text/plain", "Failed to pause device time.");
-    } else {
-        server.send(200, "text/plain", "Device paused time");
-    }
-});
-
-
-  server.on("/api/resume", HTTP_GET, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      // Attempt to resume the device
-      isPaused = false;
-      EEPROM.put(210, isPaused);
-  
-      // Check if EEPROM commit for isPaused is successful
-      if (!EEPROM.commit()) {
-          errorMessage = "Failed to commit resume state to EEPROM.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-  
-      // Attempt to turn on the LED
-      digitalWrite(RELAY_PIN, HIGH);
-      isLEDOn = true;
-      EEPROM.put(300, isLEDOn);
-  
-      // Check if EEPROM commit for isLEDOn is successful
-      if (!EEPROM.commit()) {
-          errorMessage = "Failed to commit LED state to EEPROM.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-  
-      // Respond to the client
-      if (errorOccurred) {
-          server.send(500, "text/plain", "Failed to resume device time.");
-      } else {
-          server.send(200, "text/plain", "Device resumed time");
-      }
-  });
-
-
-  server.on("/api/startfree", HTTP_GET, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      Serial.println("Free light");
-  
-      // Set the free state
-      isFree = true;
-      EEPROM.put(211, isFree);
-
-      // Turn on the light
-      digitalWrite(RELAY_PIN, HIGH);
-  
-      // Check if EEPROM commit is successful
-      if (!EEPROM.commit()) {
-          errorMessage = "Failed to commit free state to EEPROM.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-
-      // Respond to the client
-      if (errorOccurred) {
-          server.send(500, "text/plain", "Failed to start free light.");
-      } else {
-          server.send(200, "text/plain", "Device free light");
-      }
-  });
-
-
-   server.on("/api/stopfree", HTTP_GET, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      Serial.println("Stop Free light");
-  
-      // Attempt to stop free mode
-      isFree = false;
-      EEPROM.put(211, isFree);
-  
-      // Check if EEPROM commit is successful
-      if (!EEPROM.commit()) {
-          errorMessage = "Failed to commit free state to EEPROM.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-  
-      // Turn off the light
-      digitalWrite(RELAY_PIN, LOW);
-  
-      // Respond to the client
-      if (errorOccurred) {
-          server.send(500, "text/plain", "Failed to stop free light.");
-      } else {
-          server.send(200, "text/plain", "Free light stopped");
-      }
-  });
-
-
-  server.on("/api/updateDeviceName", HTTP_POST, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      if (server.hasArg("plain")) {
-          String newDeviceName = server.arg("plain"); // Get the new device name from the request body
-          if (newDeviceName.length() > 0 && newDeviceName.length() < sizeof(deviceName)) {
-              newDeviceName.toCharArray(deviceName, sizeof(deviceName)); // Copy new device name into deviceName variable
-              EEPROM.put(128, deviceName); // Save the updated device name to EEPROM
-  
-              // Check if EEPROM commit is successful
-              if (!EEPROM.commit()) {
-                  errorMessage = "Failed to commit device name to EEPROM.";
-                  logMessage("Error: " + errorMessage);
-                  errorOccurred = true;
-              } else {
-                  Serial.println("Device name updated to: " + String(deviceName));
-              }
-          } else {
-              errorMessage = "Invalid device name length.";
-              logMessage("Error: " + errorMessage);
-              errorOccurred = true;
-          }
-      } else {
-          errorMessage = "No device name provided.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-  
-      // Respond to the client
-      if (errorOccurred) {
-          server.send(400, "text/plain", errorMessage);
-      } else {
-          server.send(200, "text/plain", "Device name updated successfully");
-      }
-  });
+//  server.on("/", HTTP_GET, []() {
+//    server.send(200, "text/html", generateHTML());
+//  });
 
   server.on("/api/logs", HTTP_GET, []() {
     if (!SPIFFS.exists("/logs.txt")) {
@@ -1526,75 +1144,18 @@ server.on("/api/pause", HTTP_GET, []() {
     server.send(200, "text/plain", logContent);
   });
 
-server.on("/api/clearlogs", HTTP_DELETE, []() {
-    if (SPIFFS.exists("/logs.txt")) {
-        if (SPIFFS.remove("/logs.txt")) {
-            server.send(200, "text/plain", "Log file cleared successfully.");
-            Serial.println("Log file cleared successfully.");
-        } else {
-            server.send(500, "text/plain", "Failed to clear log file.");
-            Serial.println("Failed to clear log file.");
-        }
-    } else {
-        server.send(404, "text/plain", "Log file not found.");
-        Serial.println("Log file not found.");
-    }
-});
-
-
-server.on("/api/setWatchdogInterval", HTTP_POST, []() {
-    if (server.hasArg("plain")) {
-        String intervalStr = server.arg("plain");
-        int interval = intervalStr.toInt();
-        Serial.println("intervalStr: " + String(interval));
-        if (interval > 0) {
-            watchdogIntervalMinutes = interval * 60;
-            Serial.println("watchdogIntervalMinutes: " + String(watchdogIntervalMinutes));
-            saveConfig();
-            restartTicker.detach(); // Stop the previous ticker
-            restartTicker.attach(watchdogIntervalMinutes, []() {
-                if (storedTimeInSeconds > 0 || isLEDOn || isFree || isOpenTime) {
-                    Serial.println("Watchdog maintenance skipped due to active timer or light on.");
-                } else {
-                    saveState();
-                    Serial.println(F("Restarting"));
-                    ESP.restart();
-                }
-            });
-            server.send(200, "text/plain", "Watchdog interval set to " + String(watchdogIntervalMinutes) + " minutes.");
-        } else {
-            server.send(400, "text/plain", "Invalid interval. Must be greater than 0.");
-        }
-    } else {
-        server.send(400, "text/plain", "No interval provided.");
-    }
-});
-
-server.on("/api/startopentime", HTTP_GET, []() {
-      bool errorOccurred = false;
-      String errorMessage;
-  
-      Serial.println("Open time");
-  
-      // Set the open time state
-      isOpenTime = true;
-      EEPROM.put(212, isOpenTime);
-
-      // Turn on the light
-      digitalWrite(RELAY_PIN, HIGH);
-  
-      // Check if EEPROM commit is successful
-      if (!EEPROM.commit()) {
-          errorMessage = "Failed to commit free state to EEPROM.";
-          logMessage("Error: " + errorMessage);
-          errorOccurred = true;
-      }
-
-      // Respond to the client
-      if (errorOccurred) {
-          server.send(500, "text/plain", "Failed to start open time.");
+  server.on("/api/clearlogs", HTTP_DELETE, []() {
+      if (SPIFFS.exists("/logs.txt")) {
+          if (SPIFFS.remove("/logs.txt")) {
+              server.send(200, "text/plain", "Log file cleared successfully.");
+              Serial.println("Log file cleared successfully.");
+          } else {
+              server.send(500, "text/plain", "Failed to clear log file.");
+              Serial.println("Failed to clear log file.");
+          }
       } else {
-          server.send(200, "text/plain", "Device open time");
+          server.send(404, "text/plain", "Log file not found.");
+          Serial.println("Log file not found.");
       }
   });
 
@@ -1661,6 +1222,55 @@ void manageLEDTiming() {
   }
 }
 
+void sendHeartbeat()
+{
+  if (WiFi.status() == WL_CONNECTED) {
+        WiFiClient client;
+        HTTPClient http;
+
+        int deviceId;
+        EEPROM.get(224, deviceId);  
+
+        String fullURL = String(hostURL) + heartbeatURL;  
+        Serial.println("Sending pause request to server: " + fullURL);
+
+        http.begin(client, fullURL);
+        http.addHeader("Content-Type", "application/json");
+
+        // Prepare the JSON payload
+        String payload = "{\"device_id\": \"" + String(deviceId) + "\"}";
+        Serial.println(payload);
+        // Send the request
+        int httpResponseCode = http.POST(payload);
+
+        if (httpResponseCode >= 200 && httpResponseCode < 300) {
+            String response = http.getString();
+            Serial.println("Server response: " + response);
+        } else {
+            Serial.println("Error sending heartbeat: " + String(httpResponseCode));
+            digitalWrite(ERROR_LED_PIN, HIGH);
+            addToQueue("POST", fullURL, payload);
+        }
+
+        http.end();
+    } else {
+        Serial.println("WiFi not connected. Cannot send pause status.");
+    }
+}
+
+void manageHeartBeat()
+{
+  if (heartbeatInterval <= 0)
+  {
+    heartbeatInterval = defaultHeartbeatInterval;
+    sendHeartbeat();
+  }
+  Serial.print("heartbeatInterval: ");
+  Serial.println(String(heartbeatInterval));
+  delay(1000);
+  heartbeatInterval--;
+  EEPROM.put(350, heartbeatInterval);
+}
 
 int readTimeFromSPIFFS() {
   File file = SPIFFS.open(timeFilePath, "r");
@@ -1745,81 +1355,22 @@ void logMessage(const String& message) {
   Serial.println("Logged message: " + message);
 }
 
-String generateHTML() {
-    String page = "<!DOCTYPE html><html lang=\"en\"><head>";
-    page += "<meta charset=\"UTF-8\">";
-    page += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
-    page += "<title>Device Configuration</title>";
-    page += "<style>";
-    page += "body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f9; text-align: center; }";
-    page += "h1 { color: #333; }";
-    page += "form { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); text-align: left; }";
-    page += "input[type='text'], button { box-sizing: border-box; width: 100%; padding: 8px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; }";
-    page += "input[type='submit'], button { background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }";
-    page += "input[type='submit']:hover, button:hover { background-color: #45a049; }";
-    page += ".version { font-size: 0.9em; color: #777; margin-bottom: 20px; }";
-    page += ".divider { border: 1px solid lightgray; margin: 15px 0px; }";
-    page += "#logs { max-height: 300px; overflow-y: auto; margin-top: 20px; background-color: #fff; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }";
-    page += "#clearLogsBtn { display: none; margin-top: 10px; }"; // Initially hidden
-    page += "</style>";
-    page += "</head><body>";
-    page += "<h1>Device Configuration</h1>";
-    page += "<div class='version'>" + manufacturerDeviceName + "  <span id='versionNumber'>" + versionNumber + "</span></div>";
-    page += "<form action='/save' method='POST'>";
-    page += "<b>SSID:</b> <input type='text' name='ssid' placeholder='WiFi SSID' value='" + String(ssid) + "'><br>";
-    page += "<b>Password:</b> <input type='text' name='password' placeholder='WiFi password' value='" + String(password) + "'><br>";
-    page += "<b>Client Name:</b> <input type='text' name='clientname' placeholder='Client Name' value='" + String(clientName) + "'><br>";
-    page += "<b>Server Domain:</b> <input type='text' name='hostname' placeholder='Server IP' value='" + String(serverAppDomain) + "'><br>";
-    page += "<b>Server Port:</b> <input type='text' name='port' placeholder='Server port' value='" + String(serverAppPort) + "'><br>";
-    page += "<b>Device name:</b> <input type='text' name='device_name' placeholder='Device name' value='" + String(deviceName) + "'><br>";
-    page += "<input type='submit' value='Save'>";
-    page += "</form>";
-    page += "<button onclick='fetchLogs()'>Show Logs</button>";
-    page += "<div id='logs'></div>"; // Container to display logs
-    page += "<button id='clearLogsBtn' onclick='clearLogs()'>Clear Error Log</button>"; // Button to clear logs
-    page += "<script>";
-    page += "function fetchLogs() {";
-    page += "  console.log('Fetching logs...');"; // Debugging log
-    page += "  fetch('/api/logs')"; // Fetch logs from the endpoint
-    page += "    .then(response => {";
-    page += "      if (!response.ok) { throw new Error('Network response was not ok'); }"; // Check for network error
-    page += "      return response.text();"; // Convert the response to text
-    page += "    })";
-    page += "    .then(data => {";
-    page += "      console.log('Logs fetched:', data);"; // Debugging log for fetched data
-    page += "      document.getElementById('logs').innerHTML = '<pre>' + data + '</pre>';";
-    page += "      document.getElementById('clearLogsBtn').style.display = 'block';"; // Show clear logs button
-    page += "    })";
-    page += "    .catch(error => console.error('Error fetching logs:', error));";
-    page += "}";
-    page += "function clearLogs() {";
-    page += "  console.log('Clearing logs...');"; // Debugging log
-    page += "  fetch('/api/clearlogs', { method: 'DELETE' })"; // Send DELETE request to clear logs
-    page += "    .then(response => {";
-    page += "      if (response.ok) {";
-    page += "        document.getElementById('logs').innerHTML = '<pre>Logs cleared.</pre>';";
-    page += "        document.getElementById('clearLogsBtn').style.display = 'none';"; // Hide the button again
-    page += "        console.log('Logs cleared successfully');"; // Debugging log
-    page += "      } else {";
-    page += "        console.error('Failed to clear logs');"; // Debugging log
-    page += "      }";
-    page += "    })";
-    page += "    .catch(error => console.error('Error clearing logs:', error));";
-    page += "}";
-    page += "</script>";
-    page += "</body></html>";
-    return page;
-}
-
-
 
 void registerDevice() {
   if (WiFi.status() == WL_CONNECTED) {
     WiFiClient client;
+//    client.setInsecure();
+    
     HTTPClient http;
 
     int checkId = 0;
     EEPROM.get(224, checkId);
+
+    IPAddress ipAddress = WiFi.localIP();
+    byte ip[4] = { ipAddress[0], ipAddress[1], ipAddress[2], ipAddress[3] };
+    EEPROM.put(320, ip);
+
+    IPAddress retrievedIP(ip[0], ip[1], ip[2], ip[3]);
 
     String payload = F("{");
 
@@ -1833,27 +1384,32 @@ void registerDevice() {
     else 
     {
       Serial.println(String(hostURL) + registerDeviceURL);
-      http.begin(client, String(hostURL) + registerDeviceURL); 
+      http.begin(client, String(hostURL) + registerDeviceURL);
     }
-
     
-    http.addHeader(F("Content-Type"), F("application/json"));
-
-    payload += F("\"DeviceName\":\"") + String(deviceName) + F("\",");
+    payload += F("\"IPAddress\":\"") + retrievedIP.toString() + F("\",");
     payload += F("\"ClientName\":\"") + String(clientName) + F("\",");
     payload += F("\"DeviceStatusID\":1"); // Set initial status as 1/Pending Configuration
     payload += F("}");
 
+    http.addHeader("Content-Type", "application/json");
+   
+    Serial.println("Sending payload:");
     Serial.println(payload);
     
     int httpResponseCode = http.POST(payload);
-    Serial.println(httpResponseCode);
+    String response = http.getString();
+    response.trim();
+    Serial.println("Response Code: " + String(httpResponseCode));
+    Serial.println(response);
+
+    http.end();
+    
     if (httpResponseCode >= 200 && httpResponseCode < 300) {
-      String response = http.getString();
       Serial.println(F("Device registered successfully: ") + response);
 
       // Parse the JSON response to extract device_id
-      StaticJsonDocument<200> doc;
+      StaticJsonDocument<256> doc;
       DeserializationError error = deserializeJson(doc, response);
 
       if (!error) {
@@ -1878,18 +1434,18 @@ void registerDevice() {
         
       } else {
         Serial.println(F("Failed to parse JSON response"));
+        Serial.println(error.c_str());
         digitalWrite(ERROR_LED_PIN, HIGH);
         addToQueue("POST", String(hostURL) + registerDeviceURL, payload);
       }
     } else {
-      logMessage("ERROR: Unable to register device");
+      String errorMsg = http.errorToString(httpResponseCode);
+      logMessage("ERROR: Unable to register device: " + errorMsg);
       digitalWrite(ERROR_LED_PIN, HIGH);
       addToQueue("POST", String(hostURL) + updateDeviceURL, payload); // Queue the request if failed
       Serial.print(F("Error on sending POST: "));
-      Serial.println(httpResponseCode);
+      Serial.println(errorMsg);
     }
-
-    http.end();
   } else {
     Serial.println(F("Error in WiFi connection"));
   }
@@ -2012,8 +1568,9 @@ void switchToAPModeOnDemand() {
   // Clear stored WiFi credentials
   memset(ssid, 0, sizeof(ssid));
   memset(password, 0, sizeof(password));
+  isRegistered = false;
   saveConfig();
-
+  wifiManager.resetSettings();
   // Restart device to start in AP mode
   delay(1000);
   ESP.restart();
@@ -2029,11 +1586,13 @@ void handleButtonPressCheck() {
         // Control the light based on the button state
         if (currentButtonState == LOW) {
             // Button is pressed, turn on the light
+            Serial.println("Button pressed. Manual lights on.");
             digitalWrite(RELAY_PIN, HIGH);
         } else {
             // Button is released, turn off the light
            if (!isFree && !isOpenTime) 
            {
+//              Serial.println("Button released. Manual lights off.");
               digitalWrite(RELAY_PIN, LOW);
            }
         }
